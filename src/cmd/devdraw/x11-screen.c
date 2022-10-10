@@ -39,6 +39,7 @@ static int _xtoplan9mouse(Xwin *w, XEvent *e, Mouse *m);
 static void _xmovewindow(Xwin *w, Rectangle r);
 static int _xtoplan9kbd(XEvent *e);
 static int _xselect(XEvent *e);
+static void _xunbounce(Client *c, Mouse m);
 
 static void	rpc_resizeimg(Client*);
 static void	rpc_resizewindow(Client*, Rectangle);
@@ -312,8 +313,6 @@ xloop(void)
 	}
 }
 
-static int kcodecontrol, kcodealt, kcodeshift;
-
 /*
  * Handle an incoming X event.
  */
@@ -321,14 +320,11 @@ static void
 runxevent(XEvent *xev)
 {
 	int c;
-	int modp;
 	KeySym k;
 	static Mouse m;
 	XButtonEvent *be;
 	XKeyEvent *ke;
 	Xwin *w;
-
-	modp = 0;
 
 #ifdef SHOWEVENT
 	static int first = 1;
@@ -429,34 +425,20 @@ runxevent(XEvent *xev)
 			break;
 		}
 
-		if(xev->type == KeyPress)
-			switch(k) {
-			case XK_Control_L:
-			case XK_Control_R:
-				kcodecontrol = ke->keycode;
+		switch(k) {
+		case XK_Control_L:
+			if(xev->type == KeyPress)
 				c |= ControlMask;
-				modp = 1;
-				break;
-			case XK_Alt_L:
-			case XK_Alt_R:
-				kcodealt = ke->keycode;
-				// fall through
-			case XK_Shift_L:
-			case XK_Shift_R:
-				kcodeshift = ke->keycode;
-				c |= Mod1Mask;
-				modp = 1;
-			}
-		else {
-			if(ke->keycode == kcodecontrol){
+			else
 				c &= ~ControlMask;
-				modp = 1;
-		        } else if(ke->keycode == kcodealt || ke->keycode == kcodeshift){
+			goto kbutton;
+		case XK_Alt_L:
+		case XK_Shift_L:
+			if(xev->type == KeyPress)
+				c |= Mod1Mask;
+			else
 				c &= ~Mod1Mask;
-				modp = 1;
-			}
-		}
-		if(modp){
+		kbutton:
 			_x.kstate = c;
 			if(m.buttons || _x.kbuttons) {
 				_x.altdown = 0; // used alt
@@ -466,8 +448,8 @@ runxevent(XEvent *xev)
 				if(c & Mod1Mask)
 					_x.kbuttons |= 4;
 				gfx_mousetrack(w->client, m.xy.x, m.xy.y, m.buttons|_x.kbuttons, m.msec);
+				break;
 			}
-			modp = 0;
 		}
 
 		if(xev->type != KeyPress)
@@ -1763,6 +1745,45 @@ rpc_putsnarf(char *data)
 }
 
 /*
+ * Send a button release event back to the window which started the bounce.
+ * This needs to be done to let the client know that the bounce is done.
+ */
+static void
+_xunbounce(Client *c, Mouse m)
+{
+	Xwin *w = (Xwin*)c->view;
+	XButtonEvent e;
+	XWindow dw;
+
+	c->bouncing = 0;
+
+	xlock();
+	e.type = ButtonRelease;
+	e.state = 0;
+	e.button = 0;
+	if(m.buttons&1)
+		e.button = 1;
+	else if(m.buttons&2)
+		e.button = 2;
+	else if(m.buttons&4)
+		e.button = 3;
+	e.same_screen = 1;
+	XTranslateCoordinates(_x.display, w->drawable,
+		DefaultRootWindow(_x.display),
+		m.xy.x, m.xy.y, &e.x_root, &e.y_root, &dw);
+	e.root = DefaultRootWindow(_x.display);
+	e.window = w->drawable;
+	e.subwindow = None;
+	e.x = m.xy.x;
+	e.y = m.xy.y;
+#undef time
+	e.time = CurrentTime;
+	XSendEvent(_x.display, w->drawable, True, ButtonReleaseMask, (XEvent*)&e);
+	XFlush(_x.display);
+	xunlock();
+}
+
+/*
  * Send the mouse event back to the window manager.
  * So that 9term can tell rio to pop up its button3 menu.
  */
@@ -1772,6 +1793,13 @@ rpc_bouncemouse(Client *c, Mouse m)
 	Xwin *w = (Xwin*)c->view;
 	XButtonEvent e;
 	XWindow dw;
+
+	if(m.buttons && c->bouncing){
+		_xunbounce(c, m);
+		return;
+	}else if(m.buttons){
+		c->bouncing = 1;
+	}
 
 	xlock();
 	e.type = ButtonPress;
