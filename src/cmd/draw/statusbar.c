@@ -26,6 +26,12 @@ Image *text;
 Keyboardctl *kc;
 Mousectl *mc;
 
+int
+threadmaybackground(void)
+{
+	return 1;
+}
+
 void
 initcolor(void)
 {
